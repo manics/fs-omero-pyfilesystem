@@ -3,7 +3,10 @@ from fs.base import FS
 from fs.enums import ResourceType
 from fs.errors import (
     DirectoryExists,
+    DirectoryExpected,
     DirectoryNotEmpty,
+    FileExpected,
+    RemoteConnectionError,
     ResourceError,
     ResourceNotFound,
     Unsupported,
@@ -11,32 +14,24 @@ from fs.errors import (
 from fs.info import Info
 from fs.subfs import SubFS
 
+# from io import IOBase
 import os
 import omero.clients
 from omero.gateway import BlitzGateway
 from omero.rtypes import unwrap
 
-NS = 'github.com/manics/fs-omero-pyfilesystem'
-
-
-conn = BlitzGateway(
-    host=os.getenv('OMERO_HOST'),
-    username=os.getenv('OMERO_SESSION') or os.getenv('OMERO_USER'),
-    passwd=os.getenv('OMERO_SESSION') or os.getenv('OMERO_PASSWORD'),
-    secure=True,
-    useragent='fs-omero-pyfilesystem',
-)
-conn.c.enableKeepAlive(60)
-connected = conn.connect()
-assert connected
-print(connected)
+DEFAULT_NS = 'github.com/manics/fs-omero-pyfilesystem'
 
 
 class OriginalFileObj(omero.gateway._OriginalFileAsFileObj):
+    # https://docs.python.org/3.6/library/io.html#io.IOBase
 
     def __init__(self, *args, **kwargs):
         self.readonly = kwargs.pop('readonly', False)
         super().__init__(*args, **kwargs)
+
+    def flush(self):
+        pass
 
     def truncate(self, size=0):
         if self.readonly:
@@ -53,11 +48,27 @@ class OriginalFileObj(omero.gateway._OriginalFileAsFileObj):
 
 class OmeroFS(FS):
 
-    def __init__(self, conn, root='/', create=True):
+    def __init__(self, *, host, user, passwd, root='/', create=True,
+                 ns=DEFAULT_NS, group=None):
         super().__init__()
-        self.conn = conn
-        self.root = self._get_dir(root, throw=(not create))
-        if not self.root:
+        self.ns = ns
+        # Use omero.client to get a better error message if connect fails
+        if group:
+            raise RemoteConnectionError(msg='OMERO group not supported')
+
+        try:
+            client = omero.client(host)
+            client.setAgent('fs-omero-pyfs')
+            session = client.createSession(user, passwd)
+            assert session
+            self.conn = BlitzGateway(client_obj=client, group=group)
+            # client.enableKeepAlive(60)
+            # group=?
+        except Exception as e:
+            raise RemoteConnectionError(
+                exc=e, msg='Failed to connect to OMERO')
+        self.root = root
+        if not self._get_dir(root, throw=(not create)):
             self._create_tag(root)
 
     def _normalise_path(self, path):
@@ -71,8 +82,20 @@ class OmeroFS(FS):
 
     def _get_file(self, path, throw=True):
         dirname, basename = self._split_basename(path)
-        files = list(self.conn.getObjects('OriginalFile',
-                     attributes={'path': dirname, 'name': basename}))
+        if not basename:
+            if throw:
+                raise FileExpected(path)
+        params = omero.sys.ParametersI()
+        params.addString('dirname', dirname)
+        params.addString('ns', self.ns)
+        params.addString('filename', basename)
+        files = unwrap(self.conn.getQueryService().projection(
+            'SELECT parent.id FROM OriginalFileAnnotationLink '
+            'WHERE parent.name=:filename '
+            'AND child.textValue=:dirname '
+            'AND child.ns=:ns '
+            'AND child.class=TagAnnotation',
+            params))
         if not files:
             if throw:
                 raise ResourceNotFound(path)
@@ -81,13 +104,15 @@ class OmeroFS(FS):
             raise ResourceError(
                 path, msg='Multiple files [{}] found with same path'.format(
                     len(files)))
-        return files[0]
+        return self.conn.getObject('OriginalFile', files[0][0])
 
     def _get_dir(self, path, throw=True):
         dirs = list(self.conn.getObjects('TagAnnotation',
-                    attributes={'ns': NS, 'textValue': path}))
+                    attributes={'ns': self.ns, 'textValue': path}))
         if not dirs:
             if throw:
+                if self._get_file(dir, throw=False):
+                    raise DirectoryExpected(path)
                 raise ResourceNotFound(path)
             return None
         if len(dirs) > 1:
@@ -99,9 +124,8 @@ class OmeroFS(FS):
     def _create_tag(self, path, parent=None):
         d = omero.gateway.TagAnnotationWrapper(
             self.conn, omero.model.TagAnnotationI())
-        d.setNs(NS)
+        d.setNs(self.ns)
         d.setTextValue(path, wrap=True)
-        print('Creating directory', path, 'parent', parent)
         d.save()
         # OMERO_CLASS is None which causes linkAnnotation to fail
         if parent:
@@ -126,14 +150,14 @@ class OmeroFS(FS):
         if dir:
             d['basic']['is_dir'] = True
             d['details']['created'] = (
-                dir[0].details.creationEvent.time.val / 1000)
+                dir.details.creationEvent.time.val / 1000)
             d['details']['size'] = 0
             d['details']['type'] = ResourceType.directory
         else:
             d['basic']['is_dir'] = False
             d['details']['created'] = (
                 file.ctime or file.details.creationEvent.time.val / 1000)
-            d['details']['modified'] = file.mtime
+            d['details']['modified'] = file.mtime / 1000
             d['details']['size'] = file.size
             d['details']['type'] = ResourceType.file
         return Info(d)
@@ -146,9 +170,9 @@ class OmeroFS(FS):
         parent = self._get_dir(path)
         params = omero.sys.ParametersI()
         params.addId(parent.id)
-        params.addString('ns', NS)
+        params.addString('ns', self.ns)
 
-        rdirs = unwrap(conn.getQueryService().projection(
+        rdirs = unwrap(self.conn.getQueryService().projection(
             'SELECT child.id, child.textValue FROM AnnotationAnnotationLink '
             'WHERE parent.id=:id AND child.ns=:ns',
             params))
@@ -179,9 +203,9 @@ class OmeroFS(FS):
         Open a binary file.
         """
         path = self._normalise_path(path)
-        mode = mode.replace('b', '')
+        mode = mode.replace('b', '').replace('+', '')
         dirname, basename = self._split_basename(path)
-        d = self._get_dir(dirname)
+        parent = self._get_dir(dirname)
         if mode == 'r':
             f = self._get_file(path)
             fobj = OriginalFileObj(f, readonly=True)
@@ -192,8 +216,9 @@ class OmeroFS(FS):
                 f = omero.gateway.OriginalFileWrapper(
                     self.conn, omero.model.OriginalFileI())
                 f.setName(basename)
-                f.setPath(dirname)
-                f.linkAnnotation(d)
+                f.setPath(dirname, wrap=True)
+                f.save()
+                f.linkAnnotation(parent)
             fobj = OriginalFileObj(f)
             if mode == 'w':
                 fobj.truncate()
@@ -224,13 +249,16 @@ class OmeroFS(FS):
         children = self.listdir(path)
         if children:
             raise DirectoryNotEmpty(path)
-        print('Deleting directory {}'.format(path))
         self.conn.deleteObject(d._obj)
 
     def setinfo(self, path, info):
         """
         Set resource information.
         """
-        path = self._normalise_path(path)
+        # path = self._normalise_path(path)
         # TODO
         raise Unsupported(path)
+
+    def close(self):
+        self.conn.close()
+        super().close()
