@@ -14,7 +14,7 @@ from fs.errors import (
 from fs.info import Info
 from fs.subfs import SubFS
 
-# from io import IOBase
+from io import IOBase
 import os
 import omero.clients
 from omero.gateway import BlitzGateway
@@ -23,27 +23,90 @@ from omero.rtypes import unwrap
 DEFAULT_NS = 'github.com/manics/fs-omero-pyfilesystem'
 
 
-class OriginalFileObj(omero.gateway._OriginalFileAsFileObj):
+class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
     # https://docs.python.org/3.6/library/io.html#io.IOBase
 
     def __init__(self, *args, **kwargs):
-        self.readonly = kwargs.pop('readonly', False)
+        self._readable = kwargs.pop('readable', True)
+        self._writable = kwargs.pop('writable', True)
         super().__init__(*args, **kwargs)
+
+    def close(self):
+        super().close()
+        super(IOBase, self).close()
+
+    def fileno(self):
+        raise OSError('fileno not supported')
 
     def flush(self):
         pass
 
+    def isatty(self):
+        return False
+
+    def readable(self):
+        return self._readable
+
+    # io.IOBase methods
+    # TODO: Make more efficient?
+
+    def readline(self, size=-1):
+        line = b''
+        while self.pos < self.rfs.size() and (size < 0 or len(line) < size):
+            buf = self.read(self.bufsize)
+            eol = buf.find(b'\n')
+            if eol < 0:
+                line += buf
+            else:
+                line += buf[:eol + 1]
+                self.pos -= (len(buf) - eol - 1)
+                break
+        if size > -1:
+            backtrack = len(line) - size
+            line = line[:-backtrack]
+            self.pos -= backtrack
+        return line
+
+    def readlines(self, hint=-1):
+        lines = []
+        c = 0
+        while self.pos < self.rfs.size() and (hint < 0 or c < hint):
+            line = self.readline(hint)
+            lines.append(line)
+            c += len(line)
+        return lines
+
+    def seekable(self):
+        return True
+
     def truncate(self, size=0):
-        if self.readonly:
+        if not self._writable:
             raise PermissionError('File opened read-only')
         self.rfs.truncate(size)
 
     def write(self, buf):
-        if self.readonly:
+        if not self._writable:
             raise PermissionError('File opened read-only')
         n = len(buf)
         self.rfs.write(buf, self.pos, n)
         self.pos += n
+        return len(buf)
+
+    def writable(self):
+        return self._writable
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def __iter__(self):
+        while self.pos < self.rfs.size():
+            yield self.readline()
+
+    def __next__(self):
+        if self.pos < self.rfs.size():
+            return self.readline()
+        raise StopIteration
 
 
 class OmeroFS(FS):
