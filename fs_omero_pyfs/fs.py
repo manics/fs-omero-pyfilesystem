@@ -5,20 +5,27 @@ from fs.errors import (
     DirectoryExists,
     DirectoryExpected,
     DirectoryNotEmpty,
+    FileExists,
     FileExpected,
     RemoteConnectionError,
+    RemoveRootError,
     ResourceError,
     ResourceNotFound,
-    Unsupported,
 )
 from fs.info import Info
 from fs.subfs import SubFS
 
-from io import IOBase
+from io import (
+    IOBase,
+    UnsupportedOperation,
+)
 import os
 import omero.clients
 from omero.gateway import BlitzGateway
-from omero.rtypes import unwrap
+from omero.rtypes import (
+    rtime,
+    unwrap,
+)
 
 DEFAULT_NS = 'github.com/manics/fs-omero-pyfilesystem'
 
@@ -36,13 +43,23 @@ class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
         super(IOBase, self).close()
 
     def fileno(self):
-        raise OSError('fileno not supported')
+        raise UnsupportedOperation('fileno not supported')
 
     def flush(self):
         pass
 
     def isatty(self):
         return False
+
+    def seek(self, n, mode=0):
+        super().seek(n, mode)
+        return self.pos
+
+    def read(self, n=-1):
+        if not self._readable:
+            raise PermissionError('File opened write-only')
+        r = super().read(n)
+        return r
 
     def readable(self):
         return self._readable
@@ -61,10 +78,6 @@ class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
                 line += buf[:eol + 1]
                 self.pos -= (len(buf) - eol - 1)
                 break
-        if size > -1:
-            backtrack = len(line) - size
-            line = line[:-backtrack]
-            self.pos -= backtrack
         return line
 
     def readlines(self, hint=-1):
@@ -79,10 +92,20 @@ class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
     def seekable(self):
         return True
 
-    def truncate(self, size=0):
+    def truncate(self, size=None):
         if not self._writable:
             raise PermissionError('File opened read-only')
-        self.rfs.truncate(size)
+        if size is None:
+            size = self.pos
+        currentsize = self.rfs.size()
+        currentpos = self.pos
+        if size > currentsize:
+            self.pos = currentsize
+            self.write(b'\0' * (size - currentsize))
+            self.pos = currentpos
+        else:
+            self.rfs.truncate(size)
+        return size
 
     def write(self, buf):
         if not self._writable:
@@ -111,6 +134,17 @@ class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
 
 class OmeroFS(FS):
 
+    # https://github.com/PyFilesystem/pyfilesystem2/blob/129567606066cd002bb45a11aae543f7b73f0134/fs/base.py#L675
+    _meta = {
+        'case_insensitive': False,
+        'invalid_path_chars': '\0',
+        'max_path_length': None,
+        'max_sys_path_length': None,
+        'network': True,
+        'read_only': False,
+        'supports_rename': True,
+    }
+
     def __init__(self, *, host, user, passwd, root='/', create=True,
                  ns=DEFAULT_NS, group=None):
         super().__init__()
@@ -134,16 +168,12 @@ class OmeroFS(FS):
         if not self._get_dir(root, throw=(not create)):
             self._create_tag(root)
 
-    def _normalise_path(self, path):
-        path = '/' + path.strip('/')
-        return path
-
     def _split_basename(self, path):
-        path = self._normalise_path(path)
+        path = self.validatepath(path)
         dirname, basename = path.rsplit('/', 1)
-        return self._normalise_path(dirname), basename
+        return self.validatepath(dirname), basename
 
-    def _get_file(self, path, throw=True):
+    def _get_file(self, path, throw=True, checkother=True):
         dirname, basename = self._split_basename(path)
         if not basename:
             if throw:
@@ -161,6 +191,8 @@ class OmeroFS(FS):
             params))
         if not files:
             if throw:
+                if checkother and self._get_dir(path, throw=False):
+                    raise FileExpected(path)
                 raise ResourceNotFound(path)
             return None
         if len(files) > 1:
@@ -169,12 +201,13 @@ class OmeroFS(FS):
                     len(files)))
         return self.conn.getObject('OriginalFile', files[0][0])
 
-    def _get_dir(self, path, throw=True):
+    def _get_dir(self, path, throw=True, checkother=True):
+        vpath = self.validatepath(path)
         dirs = list(self.conn.getObjects('TagAnnotation',
-                    attributes={'ns': self.ns, 'textValue': path}))
+                    attributes={'ns': self.ns, 'textValue': vpath}))
         if not dirs:
             if throw:
-                if self._get_file(dir, throw=False):
+                if checkother and self._get_file(path, throw=False):
                     raise DirectoryExpected(path)
                 raise ResourceNotFound(path)
             return None
@@ -185,6 +218,7 @@ class OmeroFS(FS):
         return dirs[0]
 
     def _create_tag(self, path, parent=None):
+        # path assumed to be validated
         d = omero.gateway.TagAnnotationWrapper(
             self.conn, omero.model.TagAnnotationI())
         d.setNs(self.ns)
@@ -200,11 +234,10 @@ class OmeroFS(FS):
         """
         Get info regarding a file or directory.
         """
-        path = self._normalise_path(path)
         dirname, basename = self._split_basename(path)
         d = {'basic': {'name': basename}, 'details': {}}
-        dir = self._get_dir(path, throw=False)
-        file = self._get_file(path, throw=False)
+        dir = self._get_dir(path, throw=False, checkother=False)
+        file = self._get_file(path, throw=False, checkother=False)
         if dir and file:
             raise ResourceError(
                 path, msg='Directory and file found with same path')
@@ -219,7 +252,7 @@ class OmeroFS(FS):
         else:
             d['basic']['is_dir'] = False
             d['details']['created'] = (
-                file.ctime or file.details.creationEvent.time.val / 1000)
+                file.ctime or file.details.creationEvent.time.val) / 1000
             d['details']['modified'] = file.mtime / 1000
             d['details']['size'] = file.size
             d['details']['type'] = ResourceType.file
@@ -229,7 +262,6 @@ class OmeroFS(FS):
         """
         Get a list of resources in a directory.
         """
-        path = self._normalise_path(path)
         parent = self._get_dir(path)
         params = omero.sys.ParametersI()
         params.addId(parent.id)
@@ -250,7 +282,7 @@ class OmeroFS(FS):
         """
         Make a directory.
         """
-        path = self._normalise_path(path)
+        vpath = self.validatepath(path)
         dirname, basename = self._split_basename(path)
         d = self._get_dir(path, throw=False)
         if d:
@@ -258,43 +290,49 @@ class OmeroFS(FS):
                 raise DirectoryExists(path)
         else:
             parent = self._get_dir(dirname)
-            self._create_tag(path, parent)
-        return SubFS(self, path)
+            self._create_tag(vpath, parent)
+        return SubFS(self, vpath)
 
     def openbin(self, path, mode='r', buffering=-1, **options):
         """
         Open a binary file.
         """
-        path = self._normalise_path(path)
-        mode = mode.replace('b', '').replace('+', '')
+        if 't' in mode:
+            raise ValueError('Text mode not supported')
+        mode = mode.replace('b', '')
         dirname, basename = self._split_basename(path)
-        parent = self._get_dir(dirname)
-        if mode == 'r':
+        parent = self._get_dir(dirname, throw=False)
+        if not parent:
+            raise ResourceNotFound(path, 'Parent directory not found')
+        if 'r' in mode:
             f = self._get_file(path)
-            fobj = OriginalFileObj(f, readonly=True)
+            fobj = OriginalFileObj(f, writable=('+' in mode))
             return fobj
-        if mode in ('a', 'w'):
+        if 'a' in mode or 'w' in mode or 'x' in mode:
             f = self._get_file(path, throw=False)
+            if f and 'x' in mode:
+                raise FileExists(path)
             if not f:
+                if self._get_dir(path, throw=False):
+                    raise FileExpected(path)
                 f = omero.gateway.OriginalFileWrapper(
                     self.conn, omero.model.OriginalFileI())
                 f.setName(basename)
                 f.setPath(dirname, wrap=True)
                 f.save()
                 f.linkAnnotation(parent)
-            fobj = OriginalFileObj(f)
-            if mode == 'w':
-                fobj.truncate()
+            fobj = OriginalFileObj(f, readable=('+' in mode))
+            if 'w' in mode:
+                fobj.truncate(0)
             fobj.seek(0, os.SEEK_END)
             return fobj
-        raise Unsupported(
-            path, msg='openbin mode "{}" not supported'.format(mode))
+        raise ValueError(
+            'openbin mode "{}" not supported: {}'.format(mode, path))
 
     def remove(self, path):
         """
         Remove a file.
         """
-        path = self._normalise_path(path)
         f = self._get_file(path)
         self.conn.deleteObject(f._obj)
 
@@ -307,7 +345,9 @@ class OmeroFS(FS):
         BUG: The alternative method conn.deleteObjects() also deletes the
              parent even if deleteAnns=False deleteChildren=False
         """
-        path = self._normalise_path(path)
+        vpath = self.validatepath(path)
+        if vpath == self.root:
+            raise RemoveRootError(self.root)
         d = self._get_dir(path)
         children = self.listdir(path)
         if children:
@@ -317,10 +357,16 @@ class OmeroFS(FS):
     def setinfo(self, path, info):
         """
         Set resource information.
+        Only supports ctime and mtime for files
         """
-        # path = self._normalise_path(path)
-        # TODO
-        raise Unsupported(path)
+        mtime = info.get('details', {}).get('modified')
+        ctime = info.get('details', {}).get('created')
+        f = self._get_file(path)
+        if mtime:
+            f._obj.mtime = rtime(mtime * 1000)
+        if ctime:
+            f._obj.ctime = rtime(ctime * 1000)
+        f.save()
 
     def close(self):
         self.conn.close()
