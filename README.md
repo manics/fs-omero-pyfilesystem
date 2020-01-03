@@ -2,9 +2,6 @@
 
 A [Python filesystem abstraction](https://www.pyfilesystem.org/) layer that stores files in [OMERO](https://www.openmicroscopy.org/omero/).
 
-This is pre-alpha software.
-Breaking changes may be made.
-
 
 ## Example
 

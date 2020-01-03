@@ -2,11 +2,13 @@ import setuptools
 
 setuptools.setup(
     name='fs-omero-pyfs',
-    version='0.0.1',
+    version='0.0.2',
     url='https://github.com/manics/fs-omero-pyfs',
     author='Simon Li',
     license='BSD 3-Clause',
     description='OMERO PyFilesystem2 filesystem',
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
     packages=setuptools.find_packages(),
     install_requires=[
         'omero-py>=5.6.dev8',
