@@ -9,8 +9,8 @@ setuptools.setup(
     description='OMERO PyFilesystem2 filesystem',
     packages=setuptools.find_packages(),
     install_requires=[
-        'notebook',
-        'fs>=2<=3',
+        'omero-py>=5.6.dev8',
+        'fs>=2,<=3',
     ],
     entry_points={
         'fs.opener': [
@@ -20,7 +20,7 @@ setuptools.setup(
         ]
     },
     python_requires='>=3.5',
-    tests_requires=[
+    tests_require=[
         'pytest>=5,<=6',
     ],
     classifiers=[

@@ -1,15 +1,21 @@
+dist: bionic
 language: python
+services:
+  - docker
 
 python:
   - "3.6"
 
 install:
-  - pip install flake8
+  - pip install flake8 pytest https://github.com/ome/zeroc-ice-ubuntu1804/releases/download/0.3.0/zeroc_ice-3.6.5-cp36-cp36m-linux_x86_64.whl
 
 script:
   - flake8 .
-  # - python setup.py sdist
-  # - python -mpip install dist/*.tar.gz
+  - git clone git://github.com/openmicroscopy/omero-test-infra .omero
+  - NOCLEAN=true .omero/docker lib
+  - python setup.py sdist
+  - python -mpip install dist/*.tar.gz
+  - pytest tests
 
 deploy:
   - provider: pypi

@@ -6,6 +6,8 @@ import unittest
 from uuid import uuid4
 
 
+# Tests are inherited from
+# https://github.com/PyFilesystem/pyfilesystem2/blob/v2.4.11/fs/test.py#L248
 class TestOmeroFS(FSTestCases, unittest.TestCase):
 
     def make_fs(self):
