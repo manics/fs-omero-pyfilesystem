@@ -24,7 +24,10 @@ setuptools.setup(
         'pytest>=5,<=6',
     ],
     classifiers=[
-        'Framework :: OMERO',
-        'Framework :: PyFilesystem',
+        'License :: OSI Approved :: BSD License',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 3',
+        'Topic :: Scientific/Engineering',
+        'Topic :: System :: Filesystems',
     ],
 )
