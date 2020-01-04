@@ -34,7 +34,7 @@ from omero.rtypes import (
     unwrap,
 )
 
-DEFAULT_NS = 'github.com/manics/fs-omero-pyfilesystem'
+DEFAULT_NS = 'github.com/manics/fs-omero-pyfs'
 
 
 class OriginalFileObj(omero.gateway._OriginalFileAsFileObj, IOBase):
