@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='fs-omero-pyfs',
-    version='0.0.3',
+    version='0.0.4',
     url='https://github.com/manics/fs-omero-pyfs',
     author='Simon Li',
     license='MIT',
@@ -27,6 +27,7 @@ setuptools.setup(
     ],
     classifiers=[
         'License :: OSI Approved :: MIT License',
+        'Operating System :: OS Independent',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
         'Topic :: Scientific/Engineering',
