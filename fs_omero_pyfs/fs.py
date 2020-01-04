@@ -22,6 +22,7 @@ from io import (
     IOBase,
     UnsupportedOperation,
 )
+import logging
 from time import time
 import omero.clients
 from omero.gateway import (
@@ -172,35 +173,41 @@ class OmeroFS(FS):
     }
 
     def __init__(self, *, host, user, passwd, root='/', create=True,
-                 ns=DEFAULT_NS, group=None, cache_ttl=2):
+                 ns=DEFAULT_NS, groupid=None, cache_ttl=2):
         super().__init__()
+        self.log = logging.getLogger(__name__)
+        self.strlabel = '{}: {}@{} ns={} groupid={} cache_ttl={}'.format(
+            __name__, user, host, ns, groupid, cache_ttl)
         self.ns = ns
-        # Use omero.client to get a better error message if connect fails
-        if group:
-            raise RemoteConnectionError(msg='OMERO group not supported')
 
+        # Use omero.client to get a better error message if connect fails
         try:
             client = omero.client(host)
             client.setAgent('fs-omero-pyfs')
             session = client.createSession(user, passwd)
             assert session
-            self.conn = BlitzGateway(client_obj=client, group=group)
-            # client.enableKeepAlive(60)
-            # group=?
+            self.conn = BlitzGateway(client_obj=client)
+            self.conn.SERVICE_OPTS.setOmeroGroup(groupid)
         except Exception as e:
             raise RemoteConnectionError(
-                exc=e, msg='Failed to connect to OMERO')
+                exc=e, msg='Failed to connect: {}'.format(self))
         self.path_cache = {}
         self.cache_ttl = cache_ttl
         self.root = root
+        self.log.debug('Connected: %s', self)
         if not self._get_dir(root, throw=(not create)):
             self._create_tag(root)
 
+    def __str__(self):
+        return self.strlabel
+
     def _cache_put(self, path, resource):
+        # self.log.debug('_cache_put(%s)', path)
         if self.cache_ttl > 0:
             self.path_cache[path] = CachedResource(path, resource)
 
     def _cache_get(self, path):
+        # self.log.debug('_cache_get(%s)', path)
         if self.cache_ttl <= 0:
             return None
         try:
@@ -208,11 +215,13 @@ class OmeroFS(FS):
         except KeyError:
             return None
         if cached.time + self.cache_ttl > time():
+            # self.log.debug('%s', cached)
             return cached
         self._cache_remove(path)
         return None
 
     def _cache_remove(self, path):
+        # self.log.debug('_cache_remove(%s)', path)
         self.path_cache.pop(path, None)
 
     def _split_basename(self, path):
@@ -221,7 +230,11 @@ class OmeroFS(FS):
         return self.validatepath(dirname), basename
 
     def _get_file(self, path, throw=True, checkother=True):
-        # print('_get_file', path, throw, checkother)
+        self.log.debug('_get_file %s %s %s', path, throw, checkother)
+        vpath = self.validatepath(path)
+        cached = self._cache_get(vpath)
+        if cached and cached.type == ResourceType.file:
+            return self.conn.getObject('OriginalFile', cached.id)
         dirname, basename = self._split_basename(path)
         if not basename:
             if throw:
@@ -252,7 +265,9 @@ class OmeroFS(FS):
             raise ResourceError(
                 path, msg='Multiple files [{}] found with same path'.format(
                     len(files)))
-        return self.conn.getObject('OriginalFile', files[0][0])
+        file = self.conn.getObject('OriginalFile', files[0][0])
+        self._cache_put(vpath, file)
+        return file
 
     def _get_dir_ignore_parents(self, path, throw=True, checkother=True):
         vpath = self.validatepath(path)
@@ -272,7 +287,7 @@ class OmeroFS(FS):
         return dirs[0]
 
     def _get_dir(self, path, throw=True, checkother=True):
-        # print('_get_dir', path, throw, checkother)
+        self.log.debug('_get_dir %s %s %s', path, throw, checkother)
         vpath = self.validatepath(path)
         cached = self._cache_get(vpath)
         if cached and cached.type == ResourceType.directory:
@@ -283,8 +298,11 @@ class OmeroFS(FS):
                 raise ResourceError(
                     'Top-level directory "{}" != root "{}"'.format(
                         dirname, self.root))
-            return self._get_dir_ignore_parents(
+            dir = self._get_dir_ignore_parents(
                 dirname, throw=throw, checkother=checkother)
+            if dir:
+                self._cache_put(vpath, dir)
+            return dir
 
         parent = self._get_dir(dirname, throw=False, checkother=False)
         if not parent:
@@ -333,15 +351,26 @@ class OmeroFS(FS):
         """
         Get info regarding a file or directory.
         """
+        vpath = self.validatepath(path)
         dirname, basename = self._split_basename(path)
         d = {'basic': {'name': basename}, 'details': {}}
-        dir = self._get_dir(path, throw=False, checkother=False)
-        file = self._get_file(path, throw=False, checkother=False)
+
+        cached = self._cache_get(vpath)
+        dir = None
+        file = None
+        if cached and cached.type == ResourceType.directory:
+            dir = self._get_dir(path, throw=False, checkother=False)
+        elif cached and cached.type == ResourceType.file:
+            file = self._get_file(path, throw=False, checkother=False)
+        else:
+            dir = self._get_dir(path, throw=False, checkother=False)
+            file = self._get_file(path, throw=False, checkother=False)
         if dir and file:
             raise ResourceError(
                 path, msg='Directory and file found with same path')
         if not dir and not file:
             raise ResourceNotFound(path)
+
         if dir:
             d['basic']['is_dir'] = True
             d['details']['created'] = (
@@ -439,7 +468,9 @@ class OmeroFS(FS):
         """
         Remove a file.
         """
+        vpath = self.validatepath(path)
         f = self._get_file(path)
+        self._cache_remove(vpath)
         self.conn.deleteObject(f._obj)
 
     def removedir(self, path):

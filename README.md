@@ -16,8 +16,22 @@ pip install fs-omero-pyfs
 
 ```python
 import fs
-root = fs.open_fs('omero://{username}:{password}@{omerohost}')
+fs_url = 'omero://{username}:{password}@{omerohost}'
+root = fs.open_fs(fs_url)
 ```
+
+OMERO websockets are supported:
+```python
+fs_url = 'omero+wss://{username}:{password}@{omerohost}/omero-ws'
+```
+
+Caching is highly recommended.
+`cache_ttl` is specified in seconds, `0` disables caching.
+```python
+fs_url = 'omero://{username}:{password}@{omerohost}?cache_ttl=120'
+```
+
+The OMERO group can be changed by passing a query parameter `groupid=1234`.
 
 
 ## Development notes

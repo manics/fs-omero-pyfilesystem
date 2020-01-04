@@ -30,10 +30,10 @@ class OmeroFSOpener(Opener):
         ns = parse_result.params.get('ns')
         if ns:
             omeroargs['ns'] = ns
-        group = parse_result.params.get("group")
-        if group:
-            omeroargs['group'] = group
-        cache_ttl = parse_result.params.get("cachettl")
+        groupid = parse_result.params.get('groupid')
+        if groupid:
+            omeroargs['groupid'] = groupid
+        cache_ttl = parse_result.params.get('cache_ttl')
         if cache_ttl:
             omeroargs['cache_ttl'] = int(cache_ttl)
         omerofs = OmeroFS(**omeroargs)
