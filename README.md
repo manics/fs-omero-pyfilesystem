@@ -3,6 +3,13 @@
 A [Python filesystem abstraction](https://www.pyfilesystem.org/) layer that stores files in [OMERO](https://www.openmicroscopy.org/omero/).
 
 
+## Installation
+
+```
+pip install fs-omero-pyfs
+```
+
+
 ## Example
 
 ```python
