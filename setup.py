@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='fs-omero-pyfs',
-    version='0.0.4',
+    version='0.0.5',
     url='https://github.com/manics/fs-omero-pyfs',
     author='Simon Li',
     license='MIT',
@@ -11,7 +11,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     packages=setuptools.find_packages(),
     install_requires=[
-        'omero-py>=5.6.dev8',
+        'omero-py>=5.6.dev9',
         'fs>=2,<3',
     ],
     entry_points={
