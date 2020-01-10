@@ -11,7 +11,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     packages=setuptools.find_packages(),
     install_requires=[
-        'omero-py>=5.6.dev9',
+        'omero-py>=5.6.0',
         'fs>=2,<3',
     ],
     entry_points={
